@@ -1,7 +1,18 @@
+# Python
 venv/
-backend/venv/
 __pycache__/
 *.pyc
+*.pyo
 .env
-node_modules/
+backend/uploads/
 
+# Node
+frontend/node_modules/
+frontend/build/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# VS Code
+.vscode/
