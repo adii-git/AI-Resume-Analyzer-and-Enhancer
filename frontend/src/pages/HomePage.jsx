@@ -13,6 +13,7 @@ const FEATURES = [
 export default function HomePage() {
   return (
     <div>
+      {/* ── Dark Hero ── */}
       <div className="hero">
         <div className="hero-badge">🎓 For Job Seekers & Recruiters</div>
         <h1 className="hero-title">ATS-Aware AI<br />Resume Analyzer</h1>
@@ -41,23 +42,27 @@ export default function HomePage() {
         </div>
       </div>
 
-      <div className="page" style={{ paddingTop: 0 }}>
-        <hr className="divider" />
-        <h2 style={{ textAlign:'center', fontWeight:800, fontSize:'1.4rem', marginBottom:28 }}>
-          Everything You Need to Land the Interview
-        </h2>
-        <div className="feat-grid">
-          {FEATURES.map(f => (
-            <div key={f.title} className="feat">
-              <div className="feat-icon">{f.icon}</div>
-              <div className="feat-title">{f.title}</div>
-              <div className="feat-desc">{f.desc}</div>
-            </div>
-          ))}
+      {/* ── Light Paper Feature Section ── */}
+      <div className="feat-section">
+        <div style={{ maxWidth: 1160, margin: '0 auto' }}>
+          <h2 style={{ fontFamily: 'Georgia, serif', fontSize: '1.6rem', fontWeight: 800, textAlign: 'center', marginBottom: 32, color: '#1a1008' }}>
+            Everything You Need to Land the Interview
+          </h2>
+          <div className="feat-grid">
+            {FEATURES.map(f => (
+              <div key={f.title} className="feat">
+                <div className="feat-icon">{f.icon}</div>
+                <div className="feat-title">{f.title}</div>
+                <div className="feat-desc">{f.desc}</div>
+              </div>
+            ))}
+          </div>
         </div>
+      </div>
 
-        <hr className="divider" style={{ marginTop: 52 }} />
-        <h2 style={{ textAlign:'center', fontWeight:800, fontSize:'1.4rem', marginBottom:28 }}>
+      {/* ── Dark ATS Formula Section ── */}
+      <div className="page" style={{ paddingTop: 40 }}>
+        <h2 style={{ textAlign:'center', fontWeight:800, fontSize:'1.4rem', marginBottom:28, color:'var(--txt)' }}>
           How the ATS Score is Calculated
         </h2>
         <div className="g2">
@@ -76,7 +81,6 @@ export default function HomePage() {
             </div>
           ))}
         </div>
-
         <div style={{ textAlign:'center', marginTop:48 }}>
           <Link to="/analyze" className="btn btn-p btn-lg">Get Started — It's Free →</Link>
         </div>

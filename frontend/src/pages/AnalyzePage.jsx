@@ -38,7 +38,7 @@ export default function AnalyzePage() {
       </div>
 
       <div className="g2" style={{ marginBottom: 22 }}>
-        <div className="card">
+        <div className="upload-card">
           <div className="card-title">📄 Upload Resume</div>
           <UploadZone onUploaded={d => setFileId(d.file_id)} />
         </div>

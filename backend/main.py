@@ -146,5 +146,7 @@ def _find(file_id: str) -> str:
             return p
     raise HTTPException(404, f"File not found for id: {file_id}")
 
+# To this:
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    port = int(os.environ.get("PORT", 10000))
+    uvicorn.run("main:app", host="0.0.0.0", port=port)
