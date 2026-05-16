@@ -1,24 +1,36 @@
 """
 modules/pdf_gen.py
-Generates a professional PDF resume with ReportLab.
-Falls back to plain-text if ReportLab is not installed.
+Clean PDF generator matching original resume format exactly.
 """
+
 import os, shutil
-from typing import Dict, Any
+from typing import Dict, Any, List
 
 try:
     from reportlab.lib.pagesizes import A4
-    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-    from reportlab.lib.units import mm
+    from reportlab.lib.styles import ParagraphStyle
+    from reportlab.lib.units import cm
     from reportlab.lib import colors
-    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, HRFlowable
-    from reportlab.lib.enums import TA_CENTER
+    from reportlab.platypus import (
+        SimpleDocTemplate, Paragraph, Spacer,
+        HRFlowable, Table, TableStyle
+    )
+    from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_JUSTIFY, TA_RIGHT
     _RL = True
 except ImportError:
     _RL = False
 
 
+def safe(text: str) -> str:
+    if not text: return ""
+    return (str(text).strip()
+            .replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;"))
+
+
 class PDFGenerator:
+
     def generate(self, parsed: Dict[str, Any], out_path: str) -> str:
         if _RL:
             self._rl(parsed, out_path)
@@ -27,93 +39,216 @@ class PDFGenerator:
         return out_path
 
     def _rl(self, p: Dict[str, Any], out: str):
-        doc    = SimpleDocTemplate(out, pagesize=A4,
-                                   leftMargin=20*mm, rightMargin=20*mm,
-                                   topMargin=15*mm, bottomMargin=15*mm)
-        styles = getSampleStyleSheet()
-        s_name = ParagraphStyle("N", parent=styles["Title"], fontSize=22,
-                                textColor=colors.HexColor("#1a1a2e"), spaceAfter=2)
-        s_con  = ParagraphStyle("C", parent=styles["Normal"], fontSize=9,
-                                textColor=colors.HexColor("#555"), alignment=TA_CENTER, spaceAfter=6)
-        s_hdr  = ParagraphStyle("H", parent=styles["Heading2"], fontSize=11,
-                                textColor=colors.HexColor("#16213e"), spaceBefore=8, spaceAfter=2)
-        s_body = ParagraphStyle("B", parent=styles["Normal"], fontSize=9.5, leading=14, spaceAfter=3)
-        s_bul  = ParagraphStyle("L", parent=styles["Normal"], fontSize=9, leading=13, leftIndent=10, spaceAfter=2)
-        s_job  = ParagraphStyle("J", parent=styles["Normal"], fontSize=10, spaceAfter=1)
+        doc = SimpleDocTemplate(
+            out, pagesize=A4,
+            leftMargin=1.8*cm, rightMargin=1.8*cm,
+            topMargin=1.5*cm,  bottomMargin=1.5*cm,
+        )
+
+        # ── Styles ────────────────────────────────────────────────────────
+        def style(name, **kwargs):
+            defaults = dict(fontName="Helvetica", fontSize=10,
+                            textColor=colors.black, leading=14)
+            defaults.update(kwargs)
+            return ParagraphStyle(name, **defaults)
+
+        s_name    = style("N", fontName="Helvetica-Bold", fontSize=18,
+                          alignment=TA_CENTER, spaceAfter=2)
+        s_contact = style("C", fontSize=9, alignment=TA_CENTER,
+                          spaceAfter=2, textColor=colors.HexColor("#333333"))
+        s_section = style("S", fontName="Helvetica-Bold", fontSize=10.5,
+                          spaceBefore=10, spaceAfter=1)
+        s_bold    = style("B", fontName="Helvetica-Bold", fontSize=9.5,
+                          spaceAfter=1)
+        s_italic  = style("I", fontName="Helvetica-Oblique", fontSize=9,
+                          spaceAfter=2, textColor=colors.HexColor("#444"))
+        s_body    = style("T", fontSize=9.5, spaceAfter=2,
+                          alignment=TA_JUSTIFY)
+        s_bullet  = style("L", fontSize=9.5, leftIndent=10, spaceAfter=1)
+        s_right   = style("R", fontSize=9, alignment=TA_RIGHT)
 
         def hr():
-            return HRFlowable(width="100%", thickness=0.5,
-                               color=colors.HexColor("#4361ee"), spaceAfter=4)
-        def sec(title):
-            story.append(Spacer(1, 4))
-            story.append(Paragraph(title.upper(), s_hdr))
-            story.append(hr())
+            return HRFlowable(width="100%", thickness=0.7,
+                               color=colors.black, spaceAfter=4, spaceBefore=1)
+
+        def section(title):
+            return [Paragraph(safe(title), s_section), hr()]
+
+        def two_col(left_text, right_text, left_style, right_style, ratio="75%"):
+            """Create a two-column row."""
+            lw = float(ratio.strip("%")) / 100
+            rw = 1 - lw
+            page_w = A4[0] - 3.6*cm
+            t = Table(
+                [[Paragraph(left_text, left_style),
+                  Paragraph(right_text, right_style)]],
+                colWidths=[page_w * lw, page_w * rw]
+            )
+            t.setStyle(TableStyle([
+                ("VALIGN",       (0,0), (-1,-1), "TOP"),
+                ("LEFTPADDING",  (0,0), (-1,-1), 0),
+                ("RIGHTPADDING", (0,0), (-1,-1), 0),
+                ("TOPPADDING",   (0,0), (-1,-1), 0),
+                ("BOTTOMPADDING",(0,0), (-1,-1), 2),
+            ]))
+            return t
 
         story = []
-        story.append(Paragraph(p.get("name","Your Name"), s_name))
-        parts = [x for x in [p.get("email"),p.get("phone"),p.get("linkedin"),p.get("github")] if x]
-        story.append(Paragraph(" | ".join(parts), s_con))
-        story.append(Spacer(1,4))
 
-        if p.get("summary"):
-            sec("Professional Summary")
-            story.append(Paragraph(p["summary"], s_body))
+        # ── Name ──────────────────────────────────────────────────────────
+        name = safe(p.get("name", ""))
+        if name:
+            story.append(Paragraph(name, s_name))
 
-        if p.get("skills"):
-            sec("Skills")
-            story.append(Paragraph(", ".join(p["skills"]), s_body))
+        # ── Sub-header: degree + university (if available) ────────────────
+        edu = p.get("education", [])
+        if edu:
+            first_edu = edu[0]
+            deg  = safe(first_edu.get("degree", ""))
+            inst = safe(first_edu.get("institution", ""))
+            if deg or inst:
+                sub = ", ".join(filter(None, [deg, inst]))
+                story.append(Paragraph(sub, s_contact))
 
-        if p.get("experience"):
-            sec("Professional Experience")
-            for e in p["experience"]:
-                line = f"<b>{e.get('title','')}</b>"
-                if e.get("company"):  line += f" — {e['company']}"
-                if e.get("duration"): line += f" &nbsp;<i><font size='8'>{e['duration']}</font></i>"
-                story.append(Paragraph(line, s_job))
-                for b in e.get("bullets",[]): story.append(Paragraph(f"• {b}", s_bul))
-                story.append(Spacer(1,3))
+        # ── Contact line ──────────────────────────────────────────────────
+        parts = list(filter(None, [
+            safe(p.get("email", "")),
+            safe(p.get("linkedin", "")),
+            safe(p.get("github", "")),
+            safe(p.get("phone", "")),
+        ]))
+        if parts:
+            story.append(Paragraph("    ".join(parts), s_contact))
 
-        if p.get("education"):
-            sec("Education")
-            for e in p["education"]:
-                line = f"<b>{e.get('degree','')}</b>"
-                if e.get("institution"): line += f" — {e['institution']}"
-                if e.get("year"):        line += f" ({e['year']})"
-                if e.get("gpa"):         line += f" | GPA: {e['gpa']}"
-                story.append(Paragraph(line, s_body))
+        story.append(Spacer(1, 6))
 
-        if p.get("projects"):
-            sec("Projects")
-            for pr in p["projects"]:
-                ts   = ", ".join(pr.get("tech_stack",[])[:5])
-                line = f"<b>{pr.get('title','')}</b>"
-                if ts: line += f" <font size='8'>({ts})</font>"
-                story.append(Paragraph(line, s_job))
-                for d in pr.get("description",[]): story.append(Paragraph(f"• {d}", s_bul))
-                if pr.get("links"): story.append(Paragraph(f"<font size='8' color='#4361ee'>{pr['links'][0]}</font>", s_bul))
-                story.append(Spacer(1,3))
+        # ── Summary ───────────────────────────────────────────────────────
+        summary = p.get("summary", "").strip()
+        if summary:
+            story.extend(section("Summary"))
+            story.append(Paragraph(safe(summary), s_body))
 
-        for key, title in [("certifications","Certifications"),("achievements","Achievements")]:
-            items = p.get(key,[])
-            if items:
-                sec(title)
-                for item in items: story.append(Paragraph(f"• {item}", s_bul))
+        # ── Education ─────────────────────────────────────────────────────
+        if edu:
+            story.extend(section("Education"))
+            for e in edu:
+                inst = safe(e.get("institution", ""))
+                deg  = safe(e.get("degree", ""))
+                yr   = safe(e.get("year", ""))
+                gpa  = safe(e.get("gpa", ""))
+
+                if inst and yr:
+                    story.append(two_col(
+                        f"<b>{inst}</b>", yr,
+                        s_bold, s_right
+                    ))
+                elif inst:
+                    story.append(Paragraph(f"<b>{inst}</b>", s_bold))
+
+                if deg:
+                    story.append(Paragraph(deg, s_body))
+                if gpa:
+                    story.append(Paragraph(f"Percentage: {gpa}%", s_italic))
+                story.append(Spacer(1, 3))
+
+        # ── Projects ──────────────────────────────────────────────────────
+        proj_list = p.get("projects", [])
+        if proj_list:
+            story.extend(section("Projects"))
+            for pr in proj_list:
+                title = safe(pr.get("title", ""))
+                links = pr.get("links", [])
+                link_label = ""
+                if links:
+                    # Show just domain/path of link
+                    lnk = links[0]
+                    if "github" in lnk.lower():
+                        link_label = "GitHub"
+                    else:
+                        link_label = lnk.split("/")[-1][:20]
+
+                if title:
+                    if link_label:
+                        story.append(two_col(
+                            f"<b>{title}</b>",
+                            f'<font color="#4361ee">{safe(link_label)}</font>',
+                            s_bold, s_right
+                        ))
+                    else:
+                        story.append(Paragraph(f"<b>{title}</b>", s_bold))
+
+                for desc in pr.get("description", []):
+                    d = safe(desc)
+                    if d:
+                        story.append(Paragraph(f"• {d}", s_bullet))
+
+                story.append(Spacer(1, 4))
+
+        # ── Skills ────────────────────────────────────────────────────────
+        skills = p.get("skills", [])
+        if skills:
+            story.extend(section("Skills"))
+            skills_text = ", ".join(safe(s) for s in sorted(set(skills)))
+            story.append(Paragraph(skills_text, s_body))
+
+        # ── Experience ────────────────────────────────────────────────────
+        exp_list = p.get("experience", [])
+        if exp_list:
+            story.extend(section("Leadership & Experience"))
+            for entry in exp_list:
+                title    = safe(entry.get("title", ""))
+                company  = safe(entry.get("company", ""))
+                duration = safe(entry.get("duration", ""))
+
+                full_title = title
+                if company:
+                    full_title += f", {company}"
+
+                if full_title and duration:
+                    story.append(two_col(
+                        f"<b>{full_title}</b>", duration,
+                        s_bold, s_right
+                    ))
+                elif full_title:
+                    story.append(Paragraph(f"<b>{full_title}</b>", s_bold))
+
+                for bullet in entry.get("bullets", []):
+                    b = safe(bullet)
+                    if b:
+                        story.append(Paragraph(f"• {b}", s_bullet))
+
+                story.append(Spacer(1, 4))
+
+        # ── Certifications ────────────────────────────────────────────────
+        certs = p.get("certifications", [])
+        if certs:
+            story.extend(section("Certifications"))
+            for c in certs:
+                if c.strip():
+                    story.append(Paragraph(f"• {safe(c)}", s_bullet))
+
+        # ── Achievements ──────────────────────────────────────────────────
+        ach = p.get("achievements", [])
+        if ach:
+            story.extend(section("Achievements"))
+            for a in ach:
+                if a.strip():
+                    story.append(Paragraph(f"• {safe(a)}", s_bullet))
 
         doc.build(story)
 
     def _txt(self, p: Dict[str, Any], out: str):
-        lines = [p.get("name",""), " | ".join(filter(None,[p.get("email"),p.get("phone"),p.get("linkedin"),p.get("github")]))]
-        def sec(t): lines.extend(["",t.upper(),"─"*len(t)])
-        if p.get("summary"):    sec("Summary");       lines.append(p["summary"])
-        if p.get("skills"):     sec("Skills");        lines.append(", ".join(p["skills"]))
-        for e in p.get("experience",[]):
-            sec(f"{e.get('title','')} — {e.get('company','')}  {e.get('duration','')}")
-            for b in e.get("bullets",[]): lines.append(f"  • {b}")
-        for e in p.get("education",[]):
-            sec(f"{e.get('degree','')} — {e.get('institution','')} {e.get('year','')}")
-        for pr in p.get("projects",[]):
-            sec(f"Project: {pr.get('title','')}")
-            for d in pr.get("description",[]): lines.append(f"  • {d}")
+        lines = [p.get("name","")]
+        lines.append("  ".join(filter(None,[p.get("email"),p.get("phone"),p.get("linkedin"),p.get("github")])))
+        def sec(t): lines.extend(["",t,"─"*50])
+        if p.get("summary"):    sec("Summary");    lines.append(p["summary"])
+        if p.get("education"):  sec("Education")
+        for e in p.get("education",[]): lines.append(f"{e.get('institution','')} {e.get('year','')}")
+        if p.get("projects"):   sec("Projects")
+        for pr in p.get("projects",[]): [lines.append(f"• {d}") for d in pr.get("description",[])]
+        if p.get("skills"):     sec("Skills");     lines.append(", ".join(p["skills"]))
+        if p.get("experience"): sec("Experience")
+        for e in p.get("experience",[]): [lines.append(f"• {b}") for b in e.get("bullets",[])]
         txt = out.replace(".pdf",".txt")
         with open(txt,"w",encoding="utf-8") as f: f.write("\n".join(lines))
         shutil.copy(txt, out)

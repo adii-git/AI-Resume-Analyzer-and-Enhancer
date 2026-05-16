@@ -1,7 +1,7 @@
 """
 modules/embeddings.py
-Semantic similarity using sentence-transformers.
-Falls back to TF-IDF cosine if library is missing.
+Semantic similarity using TF-IDF + cosine similarity (scikit-learn).
+Lightweight alternative to sentence-transformers — no PyTorch needed.
 """
 import re
 import numpy as np
@@ -9,33 +9,44 @@ from collections import Counter
 from typing import List, Dict, Any
 
 try:
-    from sentence_transformers import SentenceTransformer
-    _MODEL = SentenceTransformer("all-MiniLM-L6-v2")
-    _ST = True
-except Exception:
-    _MODEL = None
-    _ST = False
+    from sklearn.feature_extraction.text import TfidfVectorizer
+    from sklearn.metrics.pairwise import cosine_similarity
+    _SK = True
+except ImportError:
+    _SK = False
 
-def _cos(a: np.ndarray, b: np.ndarray) -> float:
-    # Make vectors the same length for fallback TF-IDF
-    l = max(len(a), len(b))
-    a = np.pad(a, (0, l-len(a)))
-    b = np.pad(b, (0, l-len(b)))
-    d = np.linalg.norm(a) * np.linalg.norm(b)
-    return float(np.dot(a,b)/d) if d else 0.0
 
 class EmbeddingEngine:
-    def encode(self, text: str) -> np.ndarray:
-        if _ST and _MODEL:
-            return _MODEL.encode(text, convert_to_numpy=True, normalize_embeddings=True).astype(np.float32)
-        return self._tfidf(text)
+    def __init__(self):
+        self._vectorizer = TfidfVectorizer(
+            max_features=5000,
+            stop_words='english',
+            ngram_range=(1, 2)
+        ) if _SK else None
 
     def compute_similarity(self, text_a: str, text_b: str) -> float:
-        return _cos(self.encode(text_a), self.encode(text_b))
+        """Compute cosine similarity between resume and job description."""
+        if _SK and self._vectorizer:
+            try:
+                tfidf = self._vectorizer.fit_transform([text_a, text_b])
+                sim   = cosine_similarity(tfidf[0:1], tfidf[1:2])[0][0]
+                return float(sim)
+            except Exception:
+                pass
+        # Fallback — simple word overlap
+        return self._word_overlap(text_a, text_b)
 
-    def _tfidf(self, text: str) -> np.ndarray:
+    def encode(self, text: str) -> np.ndarray:
         words = re.findall(r"[a-zA-Z]{2,}", text.lower())
         freq  = Counter(words)
         vec   = np.array(list(freq.values()), dtype=np.float32)
         n     = np.linalg.norm(vec)
         return vec / n if n else vec
+
+    def _word_overlap(self, text_a: str, text_b: str) -> float:
+        words_a = set(re.findall(r"[a-zA-Z]{3,}", text_a.lower()))
+        words_b = set(re.findall(r"[a-zA-Z]{3,}", text_b.lower()))
+        if not words_a or not words_b:
+            return 0.0
+        intersection = words_a & words_b
+        return len(intersection) / (len(words_a | words_b))
