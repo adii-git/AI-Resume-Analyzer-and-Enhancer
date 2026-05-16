@@ -42,4 +42,5 @@ export async function getRoles() {
 }
 
 // Download URL — goes through proxy
-export const downloadUrl = (fileId) => `/download/${fileId}_enhanced`;
+export const downloadUrl = (fileId) => 
+  `${process.env.REACT_APP_API_URL || 'http://localhost:8000'}/download/${fileId}_enhanced`;
