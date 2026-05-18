@@ -1,8 +1,11 @@
-// utils/api.js — All backend API calls
-// The "proxy" field in package.json forwards /upload-resume etc. to localhost:8000
 import axios from 'axios';
 
-const api = axios.create({ timeout: 120000 });
+const BASE_URL = process.env.REACT_APP_API_URL || '';
+
+const api = axios.create({
+  baseURL: BASE_URL,
+  timeout: 120000,
+});
 
 api.interceptors.response.use(
   r => r,
@@ -18,7 +21,7 @@ export async function uploadResume(file, onProgress) {
     headers: { 'Content-Type': 'multipart/form-data' },
     onUploadProgress: e => onProgress?.(Math.round(e.loaded * 100 / e.total)),
   });
-  return data; // { file_id, filename, parsed }
+  return data;
 }
 
 export async function analyzeResume(payload) {
@@ -41,6 +44,7 @@ export async function getRoles() {
   return data.roles;
 }
 
-// Download URL — goes through proxy
-export const downloadUrl = (fileId) => 
-  `${process.env.REACT_APP_API_URL || 'http://localhost:8000'}/download/${fileId}_enhanced`;
+export const downloadUrl = (fileId) => {
+  const base = process.env.REACT_APP_API_URL || 'http://localhost:8000';
+  return `${base}/download/${fileId}_enhanced`;
+};
