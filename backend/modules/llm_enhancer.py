@@ -1,20 +1,37 @@
 """
 modules/llm_enhancer.py
-AI resume enhancement - visible improvements without fake metrics.
+AI resume enhancement using Groq (free) or OpenAI.
+Primary  : Groq API (free, fast, llama3-70b)
+Secondary: OpenAI GPT-4o-mini
+Fallback : Rule-based rewriter
 """
 
 import os, re, copy
 from typing import Dict, Any, List
 
+# ── Groq Client ───────────────────────────────────────────────────────────────
 try:
-    from openai import OpenAI as _OAI
-    _key    = os.getenv("OPENAI_API_KEY", "")
-    _client = _OAI(api_key=_key) if _key.startswith("sk-") else None
-    _OPENAI = _client is not None
+    from groq import Groq
+    _groq_key    = os.getenv("GROQ_API_KEY", "")
+    _groq_client = Groq(api_key=_groq_key) if _groq_key else None
+    _GROQ        = _groq_client is not None
 except Exception:
-    _client = None
-    _OPENAI = False
+    _groq_client = None
+    _GROQ        = False
 
+# ── OpenAI Client ─────────────────────────────────────────────────────────────
+try:
+    from openai import OpenAI
+    _oai_key    = os.getenv("OPENAI_API_KEY", "")
+    _oai_client = OpenAI(api_key=_oai_key) if _oai_key.startswith("sk-") else None
+    _OPENAI     = _oai_client is not None
+except Exception:
+    _oai_client = None
+    _OPENAI     = False
+
+print(f"[LLM] Groq: {_GROQ}, OpenAI: {_OPENAI}")
+
+# ── Weak phrase replacements ──────────────────────────────────────────────────
 UPGRADES = {
     "responsible for": "Led",
     "helped with"    : "Contributed to",
@@ -29,8 +46,16 @@ UPGRADES = {
     "did"            : "Executed",
 }
 
-# Words to remove (filler)
 FILLERS = r"\b(very|basically|just|really|quite|somewhat|actually)\s+"
+
+SYSTEM_PROMPT = """You are an expert resume writer with 10 years of experience.
+Your job is to rewrite resume content to be more impactful and professional.
+Rules:
+- Start bullets with strong action verbs (Led, Developed, Engineered, Optimized, etc.)
+- Keep ALL original facts and numbers
+- Do NOT invent fake metrics or percentages
+- Be concise and professional
+- Return ONLY the rewritten text, nothing else"""
 
 
 class LLMEnhancer:
@@ -46,8 +71,7 @@ class LLMEnhancer:
             new = self._summary(parsed["summary"], jd, role)
             enhanced["summary"] = new
             sections["summary"] = new
-            if new != parsed["summary"]:
-                improvements.append("✅ Enhanced professional summary.")
+            improvements.append("✅ Enhanced professional summary.")
 
         # Experience
         new_exp = self._exp(parsed.get("experience", []), role)
@@ -55,14 +79,14 @@ class LLMEnhancer:
         sections["experience"] = new_exp
         total = sum(len(e.get("bullets", [])) for e in parsed.get("experience", []))
         if total:
-            improvements.append(f"✅ Strengthened {total} experience bullet(s).")
+            improvements.append(f"✅ Rewrote {total} experience bullet(s) with stronger language.")
 
         # Projects
         new_proj = self._proj(parsed.get("projects", []))
         enhanced["projects"] = new_proj
         sections["projects"] = new_proj
         if parsed.get("projects"):
-            improvements.append("✅ Improved project descriptions.")
+            improvements.append("✅ Strengthened project descriptions.")
 
         # Skills
         if parsed.get("skills"):
@@ -74,9 +98,12 @@ class LLMEnhancer:
         if not parsed.get("summary"):
             improvements.append("⚠️  Add a professional summary section.")
         if not parsed.get("github"):
-            improvements.append("⚠️  Add your GitHub URL to the header.")
+            improvements.append("⚠️  Add your GitHub URL.")
         if not parsed.get("linkedin"):
-            improvements.append("⚠️  Add your LinkedIn URL to the header.")
+            improvements.append("⚠️  Add your LinkedIn URL.")
+
+        llm_used = "Groq (Llama3)" if _GROQ else ("OpenAI" if _OPENAI else "Rule-based")
+        improvements.append(f"ℹ️  Enhanced using: {llm_used}")
 
         return {
             "enhanced_parsed"  : enhanced,
@@ -84,12 +111,14 @@ class LLMEnhancer:
             "improvements"     : improvements,
         }
 
+    # ── Section rewriters ─────────────────────────────────────────────────────
     def _summary(self, s: str, jd: str, role: str) -> str:
         prompt = (
-            f"Target role: {role}\nOriginal summary:\n{s}\n\n"
-            "Rewrite to be more professional and impactful. "
-            "Keep same facts. No fake numbers. 2-3 sentences. "
-            "Return ONLY the rewritten summary."
+            f"Target role: {role}\n"
+            f"Original summary: {s}\n\n"
+            "Rewrite this resume summary to be more professional and impactful. "
+            "Keep the same facts. Do NOT add fake numbers. "
+            "2-3 sentences maximum. Return ONLY the rewritten text."
         )
         return self._llm(prompt) or self._clean(s)
 
@@ -100,13 +129,13 @@ class LLMEnhancer:
             new_bullets = []
             for b in entry.get("bullets", []):
                 prompt = (
-                    f"Resume bullet: {b}\n\n"
-                    "Rewrite to be more impactful:\n"
-                    "- Start with strong action verb\n"
-                    "- Keep ALL original facts and any existing numbers\n"
-                    "- Do NOT invent metrics\n"
-                    "- One line only, no prefix\n"
-                    "Return ONLY the rewritten bullet."
+                    f"Resume bullet point: {b}\n\n"
+                    "Rewrite this bullet to be more impactful:\n"
+                    "1. Start with a strong action verb\n"
+                    "2. Keep ALL original facts and numbers\n"
+                    "3. Do NOT add fake metrics\n"
+                    "4. Make it concise — one line only\n"
+                    "Return ONLY the rewritten bullet, no dash or bullet prefix."
                 )
                 new_b = self._llm(prompt) or self._bullet(b)
                 new_bullets.append(new_b.strip())
@@ -121,10 +150,12 @@ class LLMEnhancer:
             new_desc = []
             for line in proj.get("description", []):
                 prompt = (
-                    f"Project bullet: {line}\n\n"
+                    f"Project: {proj.get('title', '')}\n"
+                    f"Bullet: {line}\n\n"
                     "Rewrite to highlight technical impact. "
                     "Start with action verb. Keep original facts. "
-                    "No fake metrics. One line. Return ONLY the rewritten line."
+                    "No fake metrics. One line only. "
+                    "Return ONLY the rewritten line."
                 )
                 new_l = self._llm(prompt) or self._bullet(line)
                 new_desc.append(new_l.strip())
@@ -132,52 +163,63 @@ class LLMEnhancer:
             out.append(p)
         return out
 
+    # ── LLM Call ─────────────────────────────────────────────────────────────
     def _llm(self, prompt: str) -> str:
-        if not _OPENAI or not _client: return ""
-        try:
-            r = _client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[
-                    {"role": "system", "content":
-                     "You are an expert resume writer. "
-                     "Never add fake metrics. Keep all original facts. "
-                     "Only improve language for clarity and impact."},
-                    {"role": "user", "content": prompt}
-                ],
-                max_tokens=200, temperature=0.3,
-            )
-            return r.choices[0].message.content.strip()
-        except Exception as e:
-            print(f"[LLM] {e}"); return ""
+        """Try Groq first, then OpenAI, then return empty string."""
+        # Try Groq
+        if _GROQ and _groq_client:
+            try:
+                r = _groq_client.chat.completions.create(
+                    model    = "llama3-70b-8192",
+                    messages = [
+                        {"role": "system", "content": SYSTEM_PROMPT},
+                        {"role": "user",   "content": prompt},
+                    ],
+                    max_tokens  = 200,
+                    temperature = 0.3,
+                )
+                result = r.choices[0].message.content.strip()
+                if result:
+                    return result
+            except Exception as e:
+                print(f"[Groq] Error: {e}")
 
+        # Try OpenAI
+        if _OPENAI and _oai_client:
+            try:
+                r = _oai_client.chat.completions.create(
+                    model    = "gpt-4o-mini",
+                    messages = [
+                        {"role": "system", "content": SYSTEM_PROMPT},
+                        {"role": "user",   "content": prompt},
+                    ],
+                    max_tokens  = 200,
+                    temperature = 0.3,
+                )
+                result = r.choices[0].message.content.strip()
+                if result:
+                    return result
+            except Exception as e:
+                print(f"[OpenAI] Error: {e}")
+
+        return ""
+
+    # ── Rule-based fallback ───────────────────────────────────────────────────
     def _bullet(self, text: str) -> str:
-        """Rule-based: replace weak openers, clean fillers, capitalize."""
         t = text.strip()
         if not t: return t
-
-        # Replace weak openers
         t_lower = t.lower()
         for weak, strong in UPGRADES.items():
             if t_lower.startswith(weak + " ") or t_lower == weak:
                 t = strong + " " + t[len(weak):].lstrip()
                 break
-
-        # Remove filler words
         t = re.sub(FILLERS, " ", t, flags=re.I).strip()
         t = re.sub(r"  +", " ", t).strip()
-
-        # Capitalize first letter
-        if t:
-            t = t[0].upper() + t[1:]
-
-        # End with period
-        if t and t[-1] not in ".!?":
-            t += "."
-
+        if t: t = t[0].upper() + t[1:]
+        if t and t[-1] not in ".!?": t += "."
         return t
 
     def _clean(self, text: str) -> str:
-        """Basic summary cleanup."""
         t = re.sub(r"\bI am\b", "A", text, flags=re.I)
         t = re.sub(r"\bI\b", "", t, flags=re.I)
         t = re.sub(FILLERS, " ", t, flags=re.I)

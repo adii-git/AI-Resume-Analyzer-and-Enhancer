@@ -1,6 +1,7 @@
 """
 modules/parser.py
-Resume parser - fixed text extraction to preserve spaces properly.
+Resume parser with character-level space detection for PDFs.
+Fixes merged words by detecting character gaps on each line.
 """
 
 import re, os
@@ -35,7 +36,8 @@ TECH_SKILLS = {
     "github actions","linux","git","mysql","postgresql","mongodb","redis","elasticsearch",
     "cassandra","agile","scrum","rest api","microservices","system design","devops","mlops",
     "data structures","algorithms","oop","unit testing","figma","jira","kafka","langchain",
-    "hugging face","gradio","faiss","opencv","matplotlib","seaborn","langchain",
+    "hugging face","gradio","faiss","opencv","matplotlib","seaborn","nodejs","expressjs",
+    "reactjs","expressjs","nodejs",
 }
 SOFT_SKILLS = {
     "communication","leadership","teamwork","problem solving","critical thinking",
@@ -76,7 +78,6 @@ class ResumeParser:
             raise ValueError("No text could be extracted.")
         return self._build(text)
 
-    # ── PDF extraction using word-level grouping ──────────────────────────
     def _pdf(self, path: str) -> str:
         if pdfplumber is None:
             raise RuntimeError("pdfplumber not installed.")
@@ -86,30 +87,28 @@ class ResumeParser:
             with pdfplumber.open(path) as pdf:
                 for page in pdf.pages:
                     try:
-                        # Try word-level extraction first (better spacing)
-                        words = page.extract_words(
-                            x_tolerance=3,
-                            y_tolerance=3,
-                            keep_blank_chars=False,
-                        )
-                        if words:
-                            lines_dict = {}
-                            for w in words:
-                                y_key = round(float(w["top"]) / 4) * 4
-                                if y_key not in lines_dict:
-                                    lines_dict[y_key] = []
-                                lines_dict[y_key].append((float(w["x0"]), w["text"]))
-                            for y in sorted(lines_dict.keys()):
-                                line_words = sorted(lines_dict[y], key=lambda x: x[0])
-                                line = " ".join(w[1] for w in line_words)
-                                full_text += line + "\n"
+                        # Use character-level extraction to detect gaps
+                        page_text = self._extract_with_char_gaps(page)
+                        if page_text:
+                            full_text += page_text + "\n"
                         else:
-                            # Fallback to extract_text
-                            t = page.extract_text()
-                            if t:
-                                full_text += t + "\n"
+                            # Fallback to word extraction
+                            words = page.extract_words(x_tolerance=3, y_tolerance=3)
+                            if words:
+                                lines_dict = {}
+                                for w in words:
+                                    y_key = round(float(w["top"]) / 4) * 4
+                                    if y_key not in lines_dict:
+                                        lines_dict[y_key] = []
+                                    lines_dict[y_key].append((float(w["x0"]), w["text"]))
+                                for y in sorted(lines_dict.keys()):
+                                    lw = sorted(lines_dict[y], key=lambda x: x[0])
+                                    full_text += " ".join(w[1] for w in lw) + "\n"
+                            else:
+                                t = page.extract_text()
+                                if t:
+                                    full_text += t + "\n"
                     except Exception:
-                        # Last resort fallback
                         try:
                             t = page.extract_text()
                             if t:
@@ -121,9 +120,74 @@ class ResumeParser:
             raise RuntimeError(f"Failed to read PDF: {e}")
 
         if not full_text.strip():
-            raise ValueError("No text extracted. PDF may be image-based.")
+            raise ValueError("No text extracted.")
 
         return full_text
+
+    def _extract_with_char_gaps(self, page) -> str:
+        """
+        Extract text using character positions to detect word boundaries.
+        When there's a gap between characters larger than avg char width,
+        insert a space. This fixes PDFs that store text without spaces.
+        """
+        try:
+            chars = page.chars
+            if not chars:
+                return ""
+
+            # Group chars by line (similar y position)
+            lines_dict = {}
+            for ch in chars:
+                if not ch.get("text", "").strip():
+                    continue
+                y_key = round(float(ch["top"]) / 3) * 3
+                if y_key not in lines_dict:
+                    lines_dict[y_key] = []
+                lines_dict[y_key].append(ch)
+
+            result_lines = []
+            for y in sorted(lines_dict.keys()):
+                line_chars = sorted(lines_dict[y], key=lambda c: float(c["x0"]))
+                if not line_chars:
+                    continue
+
+                # Build text with intelligent space insertion
+                text = ""
+                prev_x1 = None
+                prev_size = None
+
+                for ch in line_chars:
+                    char_text = ch.get("text", "")
+                    if not char_text:
+                        continue
+
+                    x0   = float(ch["x0"])
+                    x1   = float(ch["x1"])
+                    size = float(ch.get("size", 10))
+
+                    if prev_x1 is not None:
+                        gap = x0 - prev_x1
+                        avg_char_w = (prev_size or size) * 0.4
+
+                        # If gap is larger than ~40% of char width → insert space
+                        if gap > avg_char_w:
+                            text += " "
+                        elif gap < -1:
+                            # Overlapping chars (ligatures) — skip
+                            pass
+
+                    text += char_text
+                    prev_x1   = x1
+                    prev_size = size
+
+                line_text = text.strip()
+                if line_text:
+                    result_lines.append(line_text)
+
+            return "\n".join(result_lines)
+
+        except Exception:
+            return ""
 
     def _docx(self, path: str) -> str:
         if not _DOCX:
@@ -137,7 +201,6 @@ class ResumeParser:
                         lines.append(cell.text)
         return "\n".join(lines)
 
-    # ── Structure ─────────────────────────────────────────────────────────
     def _build(self, raw: str) -> Dict[str, Any]:
         lines = [l.strip() for l in raw.splitlines() if l.strip()]
         head  = "\n".join(lines[:15])
@@ -166,13 +229,11 @@ class ResumeParser:
         }
 
     def _name(self, lines: List[str], head: str) -> str:
-        # Use spaCy first
         if _NLP:
             doc = _NLP(head[:500])
             for ent in doc.ents:
                 if ent.label_ == "PERSON" and len(ent.text.split()) >= 2:
                     return ent.text.strip()
-        # Heuristic: first 2-4 word Title Case line
         pat = re.compile(r"^[A-Z][a-zA-Z]+(\s[A-Z][a-zA-Z]+){1,3}$")
         for l in lines[:5]:
             if pat.match(l.strip()) and not _EMAIL.search(l):
