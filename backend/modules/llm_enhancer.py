@@ -1,15 +1,13 @@
 """
 modules/llm_enhancer.py
-AI resume enhancement using Groq (free) or OpenAI.
-Primary  : Groq API (free, fast, llama3-70b)
-Secondary: OpenAI GPT-4o-mini
-Fallback : Rule-based rewriter
+AI resume enhancement - sends full resume context to Groq/OpenAI
+for comprehensive rewriting, not just bullet-by-bullet.
 """
 
 import os, re, copy
 from typing import Dict, Any, List
 
-# ── Groq Client ───────────────────────────────────────────────────────────────
+# ── Groq ─────────────────────────────────────────────────────────────────────
 try:
     from groq import Groq
     _groq_key    = os.getenv("GROQ_API_KEY", "")
@@ -19,7 +17,7 @@ except Exception:
     _groq_client = None
     _GROQ        = False
 
-# ── OpenAI Client ─────────────────────────────────────────────────────────────
+# ── OpenAI ────────────────────────────────────────────────────────────────────
 try:
     from openai import OpenAI
     _oai_key    = os.getenv("OPENAI_API_KEY", "")
@@ -31,7 +29,6 @@ except Exception:
 
 print(f"[LLM] Groq: {_GROQ}, OpenAI: {_OPENAI}")
 
-# ── Weak phrase replacements ──────────────────────────────────────────────────
 UPGRADES = {
     "responsible for": "Led",
     "helped with"    : "Contributed to",
@@ -41,21 +38,8 @@ UPGRADES = {
     "duties included": "Delivered",
     "tasked with"    : "Executed",
     "involved in"    : "Drove",
-    "used"           : "Utilized",
-    "made"           : "Developed",
-    "did"            : "Executed",
 }
-
 FILLERS = r"\b(very|basically|just|really|quite|somewhat|actually)\s+"
-
-SYSTEM_PROMPT = """You are an expert resume writer with 10 years of experience.
-Your job is to rewrite resume content to be more impactful and professional.
-Rules:
-- Start bullets with strong action verbs (Led, Developed, Engineered, Optimized, etc.)
-- Keep ALL original facts and numbers
-- Do NOT invent fake metrics or percentages
-- Be concise and professional
-- Return ONLY the rewritten text, nothing else"""
 
 
 class LLMEnhancer:
@@ -66,34 +50,27 @@ class LLMEnhancer:
         sections     : Dict[str, Any] = {}
         improvements : List[str]      = []
 
-        # Summary
-        if parsed.get("summary"):
-            new = self._summary(parsed["summary"], jd, role)
-            enhanced["summary"] = new
-            sections["summary"] = new
-            improvements.append("✅ Enhanced professional summary.")
+        llm_available = _GROQ or _OPENAI
 
-        # Experience
-        new_exp = self._exp(parsed.get("experience", []), role)
-        enhanced["experience"] = new_exp
-        sections["experience"] = new_exp
-        total = sum(len(e.get("bullets", [])) for e in parsed.get("experience", []))
-        if total:
-            improvements.append(f"✅ Rewrote {total} experience bullet(s) with stronger language.")
-
-        # Projects
-        new_proj = self._proj(parsed.get("projects", []))
-        enhanced["projects"] = new_proj
-        sections["projects"] = new_proj
-        if parsed.get("projects"):
-            improvements.append("✅ Strengthened project descriptions.")
-
-        # Skills
-        if parsed.get("skills"):
-            sk = sorted(set(parsed["skills"]))
-            enhanced["skills"] = sk
-            sections["skills"] = sk
-            improvements.append("✅ Organized skills alphabetically.")
+        if llm_available:
+            # ── Send ENTIRE resume to AI at once for best results ──────────
+            enhanced_data = self._enhance_full_resume(parsed, jd, role)
+            if enhanced_data:
+                enhanced     = enhanced_data
+                sections     = {
+                    "summary"   : enhanced.get("summary", ""),
+                    "experience": enhanced.get("experience", []),
+                    "projects"  : enhanced.get("projects", []),
+                    "skills"    : enhanced.get("skills", []),
+                }
+                improvements.append("✅ Full resume enhanced using AI.")
+                improvements.append(f"ℹ️  Model: {'Groq Llama3-70b' if _GROQ else 'GPT-4o-mini'}")
+            else:
+                # Fallback to section-by-section
+                self._rule_enhance(parsed, enhanced, sections, improvements)
+        else:
+            self._rule_enhance(parsed, enhanced, sections, improvements)
+            improvements.append("⚠️  No AI key found. Using rule-based enhancement.")
 
         if not parsed.get("summary"):
             improvements.append("⚠️  Add a professional summary section.")
@@ -102,109 +79,189 @@ class LLMEnhancer:
         if not parsed.get("linkedin"):
             improvements.append("⚠️  Add your LinkedIn URL.")
 
-        llm_used = "Groq (Llama3)" if _GROQ else ("OpenAI" if _OPENAI else "Rule-based")
-        improvements.append(f"ℹ️  Enhanced using: {llm_used}")
-
         return {
             "enhanced_parsed"  : enhanced,
             "enhanced_sections": sections,
             "improvements"     : improvements,
         }
 
-    # ── Section rewriters ─────────────────────────────────────────────────────
-    def _summary(self, s: str, jd: str, role: str) -> str:
-        prompt = (
-            f"Target role: {role}\n"
-            f"Original summary: {s}\n\n"
-            "Rewrite this resume summary to be more professional and impactful. "
-            "Keep the same facts. Do NOT add fake numbers. "
-            "2-3 sentences maximum. Return ONLY the rewritten text."
-        )
-        return self._llm(prompt) or self._clean(s)
+    def _enhance_full_resume(self, parsed: Dict, jd: str, role: str) -> Optional[Dict]:
+        """
+        Send the ENTIRE resume as one prompt to AI.
+        AI fixes spacing issues AND enhances content simultaneously.
+        Returns enhanced parsed dict or None if failed.
+        """
+        # Build resume text
+        resume_text = self._build_resume_text(parsed)
 
-    def _exp(self, exp: List[Dict], role: str) -> List[Dict]:
-        out = []
-        for entry in exp:
+        prompt = f"""You are an expert resume writer. I have a resume with some formatting issues (merged words without spaces). Please:
+
+1. Fix any merged/concatenated words (e.g., "BuiltaSystem" should be "Built a System")
+2. Rewrite ALL bullet points to be more impactful using strong action verbs
+3. Keep ALL original facts - do NOT add fake metrics
+4. Make the professional summary more compelling
+5. Improve grammar and clarity throughout
+
+Target Role: {role}
+Job Description: {jd[:300]}
+
+RESUME TO ENHANCE:
+{resume_text}
+
+Please return the enhanced resume in this EXACT JSON format:
+{{
+  "summary": "enhanced summary here",
+  "experience": [
+    {{
+      "title": "job title",
+      "company": "company name",
+      "duration": "dates",
+      "bullets": ["bullet 1", "bullet 2", "bullet 3"]
+    }}
+  ],
+  "projects": [
+    {{
+      "title": "project name",
+      "description": ["bullet 1", "bullet 2"]
+    }}
+  ]
+}}
+
+Return ONLY the JSON, no other text."""
+
+        result = self._llm(prompt, max_tokens=2000)
+        if not result:
+            return None
+
+        try:
+            import json
+            # Clean up response
+            result = result.strip()
+            if result.startswith("```"):
+                result = re.sub(r"```json?\n?", "", result)
+                result = result.replace("```", "")
+            result = result.strip()
+
+            data = json.loads(result)
+
+            # Merge back into parsed
+            enhanced = copy.deepcopy(parsed)
+
+            if data.get("summary"):
+                enhanced["summary"] = data["summary"]
+
+            if data.get("experience"):
+                for i, exp_item in enumerate(data["experience"]):
+                    if i < len(enhanced["experience"]):
+                        if exp_item.get("bullets"):
+                            enhanced["experience"][i]["bullets"] = exp_item["bullets"]
+                        if exp_item.get("title"):
+                            enhanced["experience"][i]["title"] = exp_item["title"]
+
+            if data.get("projects"):
+                for i, proj_item in enumerate(data["projects"]):
+                    if i < len(enhanced["projects"]):
+                        if proj_item.get("description"):
+                            enhanced["projects"][i]["description"] = proj_item["description"]
+
+            if parsed.get("skills"):
+                enhanced["skills"] = sorted(set(parsed["skills"]))
+
+            return enhanced
+
+        except Exception as e:
+            print(f"[LLM] JSON parse error: {e}, result: {result[:200]}")
+            return None
+
+    def _build_resume_text(self, parsed: Dict) -> str:
+        """Build a readable resume text from parsed data."""
+        lines = []
+
+        if parsed.get("name"):
+            lines.append(f"Name: {parsed['name']}")
+
+        if parsed.get("summary"):
+            lines.append(f"\nSUMMARY:\n{parsed['summary']}")
+
+        if parsed.get("experience"):
+            lines.append("\nEXPERIENCE:")
+            for exp in parsed["experience"]:
+                lines.append(f"  {exp.get('title','')} at {exp.get('company','')}")
+                for b in exp.get("bullets", []):
+                    lines.append(f"    - {b}")
+
+        if parsed.get("projects"):
+            lines.append("\nPROJECTS:")
+            for proj in parsed["projects"]:
+                lines.append(f"  {proj.get('title','')}")
+                for d in proj.get("description", []):
+                    lines.append(f"    - {d}")
+
+        return "\n".join(lines)
+
+    def _rule_enhance(self, parsed, enhanced, sections, improvements):
+        """Rule-based fallback enhancement."""
+        if parsed.get("summary"):
+            new = self._clean(parsed["summary"])
+            enhanced["summary"] = new
+            sections["summary"] = new
+
+        new_exp = []
+        for entry in parsed.get("experience", []):
             e = copy.deepcopy(entry)
-            new_bullets = []
-            for b in entry.get("bullets", []):
-                prompt = (
-                    f"Resume bullet point: {b}\n\n"
-                    "Rewrite this bullet to be more impactful:\n"
-                    "1. Start with a strong action verb\n"
-                    "2. Keep ALL original facts and numbers\n"
-                    "3. Do NOT add fake metrics\n"
-                    "4. Make it concise — one line only\n"
-                    "Return ONLY the rewritten bullet, no dash or bullet prefix."
-                )
-                new_b = self._llm(prompt) or self._bullet(b)
-                new_bullets.append(new_b.strip())
-            e["bullets"] = new_bullets if new_bullets else entry.get("bullets", [])
-            out.append(e)
-        return out
+            e["bullets"] = [self._bullet(b) for b in entry.get("bullets", [])]
+            new_exp.append(e)
+        enhanced["experience"] = new_exp
+        sections["experience"] = new_exp
 
-    def _proj(self, projects: List[Dict]) -> List[Dict]:
-        out = []
-        for proj in projects:
+        new_proj = []
+        for proj in parsed.get("projects", []):
             p = copy.deepcopy(proj)
-            new_desc = []
-            for line in proj.get("description", []):
-                prompt = (
-                    f"Project: {proj.get('title', '')}\n"
-                    f"Bullet: {line}\n\n"
-                    "Rewrite to highlight technical impact. "
-                    "Start with action verb. Keep original facts. "
-                    "No fake metrics. One line only. "
-                    "Return ONLY the rewritten line."
-                )
-                new_l = self._llm(prompt) or self._bullet(line)
-                new_desc.append(new_l.strip())
-            p["description"] = new_desc if new_desc else proj.get("description", [])
-            out.append(p)
-        return out
+            p["description"] = [self._bullet(d) for d in proj.get("description", [])]
+            new_proj.append(p)
+        enhanced["projects"] = new_proj
+        sections["projects"] = new_proj
 
-    # ── LLM Call ─────────────────────────────────────────────────────────────
-    def _llm(self, prompt: str) -> str:
-        """Try Groq first, then OpenAI, then return empty string."""
-        # Try Groq
+        if parsed.get("skills"):
+            sk = sorted(set(parsed["skills"]))
+            enhanced["skills"] = sk
+            sections["skills"] = sk
+
+        improvements.append("✅ Applied rule-based improvements.")
+
+    def _llm(self, prompt: str, max_tokens: int = 300) -> str:
         if _GROQ and _groq_client:
             try:
                 r = _groq_client.chat.completions.create(
                     model    = "llama3-70b-8192",
                     messages = [
-                        {"role": "system", "content": SYSTEM_PROMPT},
+                        {"role": "system", "content": "You are an expert resume writer. Follow instructions exactly."},
                         {"role": "user",   "content": prompt},
                     ],
-                    max_tokens  = 200,
+                    max_tokens  = max_tokens,
                     temperature = 0.3,
                 )
-                result = r.choices[0].message.content.strip()
-                if result:
-                    return result
+                return r.choices[0].message.content.strip()
             except Exception as e:
-                print(f"[Groq] Error: {e}")
+                print(f"[Groq] {e}")
 
-        # Try OpenAI
         if _OPENAI and _oai_client:
             try:
                 r = _oai_client.chat.completions.create(
                     model    = "gpt-4o-mini",
                     messages = [
-                        {"role": "system", "content": SYSTEM_PROMPT},
+                        {"role": "system", "content": "You are an expert resume writer. Follow instructions exactly."},
                         {"role": "user",   "content": prompt},
                     ],
-                    max_tokens  = 200,
+                    max_tokens  = max_tokens,
                     temperature = 0.3,
                 )
-                result = r.choices[0].message.content.strip()
-                if result:
-                    return result
+                return r.choices[0].message.content.strip()
             except Exception as e:
-                print(f"[OpenAI] Error: {e}")
+                print(f"[OpenAI] {e}")
 
         return ""
 
-    # ── Rule-based fallback ───────────────────────────────────────────────────
     def _bullet(self, text: str) -> str:
         t = text.strip()
         if not t: return t
@@ -222,5 +279,7 @@ class LLMEnhancer:
     def _clean(self, text: str) -> str:
         t = re.sub(r"\bI am\b", "A", text, flags=re.I)
         t = re.sub(r"\bI\b", "", t, flags=re.I)
-        t = re.sub(FILLERS, " ", t, flags=re.I)
         return re.sub(r"  +", " ", t).strip()
+
+
+from typing import Optional
