@@ -1,3 +1,5 @@
+from dotenv import load_dotenv
+load_dotenv()
 """
 main.py — FastAPI entry point
 Run: uvicorn main:app --reload --port 8000
