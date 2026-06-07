@@ -1,76 +1,80 @@
 """
 modules/llm_enhancer.py
-AI resume enhancement - sends full resume context to Groq/OpenAI
-for comprehensive rewriting, not just bullet-by-bullet.
+Sends FULL resume to Groq/OpenAI for comprehensive enhancement.
+Fixes merged words AND improves content simultaneously.
 """
 
-import os, re, copy
-from typing import Dict, Any, List
+import os, re, copy, json
+from typing import Dict, Any, List, Optional
 
-# ── Groq ─────────────────────────────────────────────────────────────────────
+# Groq
 try:
     from groq import Groq
-    _groq_key    = os.getenv("GROQ_API_KEY", "")
-    _groq_client = Groq(api_key=_groq_key) if _groq_key else None
-    _GROQ        = _groq_client is not None
+    _gkey   = os.getenv("GROQ_API_KEY", "")
+    _gclient= Groq(api_key=_gkey) if _gkey else None
+    _GROQ   = _gclient is not None
 except Exception:
-    _groq_client = None
-    _GROQ        = False
+    _gclient= None
+    _GROQ   = False
 
-# ── OpenAI ────────────────────────────────────────────────────────────────────
+# OpenAI
 try:
     from openai import OpenAI
-    _oai_key    = os.getenv("OPENAI_API_KEY", "")
-    _oai_client = OpenAI(api_key=_oai_key) if _oai_key.startswith("sk-") else None
-    _OPENAI     = _oai_client is not None
+    _okey   = os.getenv("OPENAI_API_KEY", "")
+    _oclient= OpenAI(api_key=_okey) if _okey.startswith("sk-") else None
+    _OPENAI = _oclient is not None
 except Exception:
-    _oai_client = None
-    _OPENAI     = False
+    _oclient= None
+    _OPENAI = False
 
-print(f"[LLM] Groq: {_GROQ}, OpenAI: {_OPENAI}")
+print(f"[LLM] Groq={_GROQ}, OpenAI={_OPENAI}")
 
 UPGRADES = {
-    "responsible for": "Led",
-    "helped with"    : "Contributed to",
-    "worked on"      : "Developed",
-    "assisted in"    : "Supported",
-    "was part of"    : "Collaborated on",
-    "duties included": "Delivered",
-    "tasked with"    : "Executed",
-    "involved in"    : "Drove",
+    "responsible for": "Led", "helped with": "Contributed to",
+    "worked on": "Developed", "assisted in": "Supported",
+    "was part of": "Collaborated on", "duties included": "Delivered",
+    "tasked with": "Executed", "involved in": "Drove",
 }
 FILLERS = r"\b(very|basically|just|really|quite|somewhat|actually)\s+"
+
+SYSTEM = """You are an expert resume writer with 10+ years experience at top tech companies.
+Your task: Fix merged words AND enhance resume content.
+Rules:
+- Fix all merged/concatenated words (e.g. "BuiltaSystem" → "Built a System")  
+- Start every bullet with a strong action verb (Led, Developed, Engineered, Optimized, etc.)
+- Keep ALL original facts - do NOT invent fake metrics
+- Improve clarity, impact, and professionalism
+- Return ONLY valid JSON, no extra text"""
 
 
 class LLMEnhancer:
 
     def enhance(self, parsed: Dict[str, Any], jd: str,
                 role: str = "General") -> Dict[str, Any]:
-        enhanced     = copy.deepcopy(parsed)
-        sections     : Dict[str, Any] = {}
-        improvements : List[str]      = []
+        enhanced    = copy.deepcopy(parsed)
+        sections    : Dict[str, Any] = {}
+        improvements: List[str]      = []
 
-        llm_available = _GROQ or _OPENAI
-
-        if llm_available:
-            # ── Send ENTIRE resume to AI at once for best results ──────────
-            enhanced_data = self._enhance_full_resume(parsed, jd, role)
-            if enhanced_data:
-                enhanced     = enhanced_data
-                sections     = {
+        if _GROQ or _OPENAI:
+            result = self._full_enhance(parsed, jd, role)
+            if result:
+                enhanced    = result
+                sections    = {
                     "summary"   : enhanced.get("summary", ""),
                     "experience": enhanced.get("experience", []),
                     "projects"  : enhanced.get("projects", []),
                     "skills"    : enhanced.get("skills", []),
                 }
-                improvements.append("✅ Full resume enhanced using AI.")
-                improvements.append(f"ℹ️  Model: {'Groq Llama3-70b' if _GROQ else 'GPT-4o-mini'}")
+                model = "Groq Llama3-70b" if _GROQ else "GPT-4o-mini"
+                improvements.append(f"✅ Full resume enhanced using {model}.")
+                improvements.append("✅ Fixed merged words and improved all bullet points.")
+                improvements.append("✅ Applied strong action verbs throughout.")
             else:
-                # Fallback to section-by-section
                 self._rule_enhance(parsed, enhanced, sections, improvements)
+                improvements.append("⚠️  AI enhancement failed. Rule-based applied.")
         else:
             self._rule_enhance(parsed, enhanced, sections, improvements)
-            improvements.append("⚠️  No AI key found. Using rule-based enhancement.")
+            improvements.append("⚠️  No AI key configured. Rule-based enhancement applied.")
 
         if not parsed.get("summary"):
             improvements.append("⚠️  Add a professional summary section.")
@@ -79,44 +83,33 @@ class LLMEnhancer:
         if not parsed.get("linkedin"):
             improvements.append("⚠️  Add your LinkedIn URL.")
 
-        return {
-            "enhanced_parsed"  : enhanced,
-            "enhanced_sections": sections,
-            "improvements"     : improvements,
-        }
+        return {"enhanced_parsed": enhanced, "enhanced_sections": sections, "improvements": improvements}
 
-    def _enhance_full_resume(self, parsed: Dict, jd: str, role: str) -> Optional[Dict]:
-        """
-        Send the ENTIRE resume as one prompt to AI.
-        AI fixes spacing issues AND enhances content simultaneously.
-        Returns enhanced parsed dict or None if failed.
-        """
-        # Build resume text
-        resume_text = self._build_resume_text(parsed)
-
-        prompt = f"""You are an expert resume writer. I have a resume with some formatting issues (merged words without spaces). Please:
-
-1. Fix any merged/concatenated words (e.g., "BuiltaSystem" should be "Built a System")
-2. Rewrite ALL bullet points to be more impactful using strong action verbs
-3. Keep ALL original facts - do NOT add fake metrics
-4. Make the professional summary more compelling
-5. Improve grammar and clarity throughout
-
-Target Role: {role}
-Job Description: {jd[:300]}
+    # ── Full resume enhancement ───────────────────────────────────────────────
+    def _full_enhance(self, parsed: Dict, jd: str, role: str) -> Optional[Dict]:
+        resume_text = self._to_text(parsed)
+        prompt = f"""Target Role: {role}
+Job Description (first 300 chars): {jd[:300]}
 
 RESUME TO ENHANCE:
 {resume_text}
 
-Please return the enhanced resume in this EXACT JSON format:
+Instructions:
+1. Fix ALL merged words (e.g. "BuiltaSystem" → "Built a System", "ImplementedATSscoring" → "Implemented ATS scoring")
+2. Rewrite bullets to start with strong action verbs
+3. Keep ALL original facts
+4. Do NOT add fake numbers or metrics
+5. Improve grammar and clarity
+
+Return this EXACT JSON (no markdown, no extra text):
 {{
-  "summary": "enhanced summary here",
+  "summary": "enhanced summary text here",
   "experience": [
     {{
       "title": "job title",
-      "company": "company name",
+      "company": "company",
       "duration": "dates",
-      "bullets": ["bullet 1", "bullet 2", "bullet 3"]
+      "bullets": ["bullet 1", "bullet 2"]
     }}
   ],
   "projects": [
@@ -125,44 +118,52 @@ Please return the enhanced resume in this EXACT JSON format:
       "description": ["bullet 1", "bullet 2"]
     }}
   ]
-}}
+}}"""
 
-Return ONLY the JSON, no other text."""
-
-        result = self._llm(prompt, max_tokens=2000)
-        if not result:
+        raw = self._call(prompt, max_tokens=3000)
+        if not raw:
             return None
 
         try:
-            import json
-            # Clean up response
-            result = result.strip()
-            if result.startswith("```"):
-                result = re.sub(r"```json?\n?", "", result)
-                result = result.replace("```", "")
-            result = result.strip()
+            # Clean JSON
+            raw = raw.strip()
+            raw = re.sub(r"```json\s*", "", raw)
+            raw = re.sub(r"```\s*", "", raw)
+            raw = raw.strip()
 
-            data = json.loads(result)
+            # Find JSON object
+            start = raw.find("{")
+            end   = raw.rfind("}") + 1
+            if start == -1 or end == 0:
+                return None
+            raw = raw[start:end]
 
-            # Merge back into parsed
+            data = json.loads(raw)
+
+            # Merge into parsed copy
             enhanced = copy.deepcopy(parsed)
 
             if data.get("summary"):
                 enhanced["summary"] = data["summary"]
 
-            if data.get("experience"):
-                for i, exp_item in enumerate(data["experience"]):
+            if data.get("experience") and parsed.get("experience"):
+                for i, item in enumerate(data["experience"]):
                     if i < len(enhanced["experience"]):
-                        if exp_item.get("bullets"):
-                            enhanced["experience"][i]["bullets"] = exp_item["bullets"]
-                        if exp_item.get("title"):
-                            enhanced["experience"][i]["title"] = exp_item["title"]
+                        if item.get("bullets"):
+                            enhanced["experience"][i]["bullets"] = item["bullets"]
+                        # Update title if AI fixed merged words
+                        if item.get("title") and len(item["title"]) > 3:
+                            enhanced["experience"][i]["title"] = item["title"]
+                        if item.get("company") and len(item["company"]) > 1:
+                            enhanced["experience"][i]["company"] = item["company"]
 
-            if data.get("projects"):
-                for i, proj_item in enumerate(data["projects"]):
+            if data.get("projects") and parsed.get("projects"):
+                for i, item in enumerate(data["projects"]):
                     if i < len(enhanced["projects"]):
-                        if proj_item.get("description"):
-                            enhanced["projects"][i]["description"] = proj_item["description"]
+                        if item.get("description"):
+                            enhanced["projects"][i]["description"] = item["description"]
+                        if item.get("title") and len(item["title"]) > 2:
+                            enhanced["projects"][i]["title"] = item["title"]
 
             if parsed.get("skills"):
                 enhanced["skills"] = sorted(set(parsed["skills"]))
@@ -170,106 +171,97 @@ Return ONLY the JSON, no other text."""
             return enhanced
 
         except Exception as e:
-            print(f"[LLM] JSON parse error: {e}, result: {result[:200]}")
+            print(f"[LLM] Parse error: {e} | Raw: {raw[:300]}")
             return None
 
-    def _build_resume_text(self, parsed: Dict) -> str:
-        """Build a readable resume text from parsed data."""
+    def _to_text(self, parsed: Dict) -> str:
         lines = []
-
-        if parsed.get("name"):
-            lines.append(f"Name: {parsed['name']}")
-
-        if parsed.get("summary"):
-            lines.append(f"\nSUMMARY:\n{parsed['summary']}")
-
+        if parsed.get("name"):    lines.append(f"Name: {parsed['name']}")
+        if parsed.get("summary"): lines.append(f"\nSUMMARY:\n{parsed['summary']}")
         if parsed.get("experience"):
             lines.append("\nEXPERIENCE:")
             for exp in parsed["experience"]:
-                lines.append(f"  {exp.get('title','')} at {exp.get('company','')}")
+                lines.append(f"  Role: {exp.get('title','')} at {exp.get('company','')}")
                 for b in exp.get("bullets", []):
                     lines.append(f"    - {b}")
-
         if parsed.get("projects"):
             lines.append("\nPROJECTS:")
             for proj in parsed["projects"]:
-                lines.append(f"  {proj.get('title','')}")
+                lines.append(f"  Project: {proj.get('title','')}")
                 for d in proj.get("description", []):
                     lines.append(f"    - {d}")
-
         return "\n".join(lines)
 
+    # ── LLM call ─────────────────────────────────────────────────────────────
+    def _call(self, prompt: str, max_tokens: int = 3000) -> str:
+        # Try Groq first (free and fast)
+        if _GROQ and _gclient:
+            try:
+                r = _gclient.chat.completions.create(
+                    model    = "llama3-70b-8192",
+                    messages = [
+                        {"role": "system", "content": SYSTEM},
+                        {"role": "user",   "content": prompt},
+                    ],
+                    max_tokens  = max_tokens,
+                    temperature = 0.2,
+                )
+                result = r.choices[0].message.content.strip()
+                if result: return result
+            except Exception as e:
+                print(f"[Groq] Error: {e}")
+
+        # Try OpenAI
+        if _OPENAI and _oclient:
+            try:
+                r = _oclient.chat.completions.create(
+                    model    = "gpt-4o-mini",
+                    messages = [
+                        {"role": "system", "content": SYSTEM},
+                        {"role": "user",   "content": prompt},
+                    ],
+                    max_tokens  = max_tokens,
+                    temperature = 0.2,
+                )
+                result = r.choices[0].message.content.strip()
+                if result: return result
+            except Exception as e:
+                print(f"[OpenAI] Error: {e}")
+
+        return ""
+
+    # ── Rule-based fallback ───────────────────────────────────────────────────
     def _rule_enhance(self, parsed, enhanced, sections, improvements):
-        """Rule-based fallback enhancement."""
         if parsed.get("summary"):
-            new = self._clean(parsed["summary"])
-            enhanced["summary"] = new
-            sections["summary"] = new
+            s = self._clean(parsed["summary"])
+            enhanced["summary"] = s; sections["summary"] = s
 
         new_exp = []
         for entry in parsed.get("experience", []):
             e = copy.deepcopy(entry)
             e["bullets"] = [self._bullet(b) for b in entry.get("bullets", [])]
             new_exp.append(e)
-        enhanced["experience"] = new_exp
-        sections["experience"] = new_exp
+        enhanced["experience"] = new_exp; sections["experience"] = new_exp
 
         new_proj = []
         for proj in parsed.get("projects", []):
             p = copy.deepcopy(proj)
             p["description"] = [self._bullet(d) for d in proj.get("description", [])]
             new_proj.append(p)
-        enhanced["projects"] = new_proj
-        sections["projects"] = new_proj
+        enhanced["projects"] = new_proj; sections["projects"] = new_proj
 
         if parsed.get("skills"):
             sk = sorted(set(parsed["skills"]))
-            enhanced["skills"] = sk
-            sections["skills"] = sk
-
+            enhanced["skills"] = sk; sections["skills"] = sk
         improvements.append("✅ Applied rule-based improvements.")
-
-    def _llm(self, prompt: str, max_tokens: int = 300) -> str:
-        if _GROQ and _groq_client:
-            try:
-                r = _groq_client.chat.completions.create(
-                    model    = "llama3-70b-8192",
-                    messages = [
-                        {"role": "system", "content": "You are an expert resume writer. Follow instructions exactly."},
-                        {"role": "user",   "content": prompt},
-                    ],
-                    max_tokens  = max_tokens,
-                    temperature = 0.3,
-                )
-                return r.choices[0].message.content.strip()
-            except Exception as e:
-                print(f"[Groq] {e}")
-
-        if _OPENAI and _oai_client:
-            try:
-                r = _oai_client.chat.completions.create(
-                    model    = "gpt-4o-mini",
-                    messages = [
-                        {"role": "system", "content": "You are an expert resume writer. Follow instructions exactly."},
-                        {"role": "user",   "content": prompt},
-                    ],
-                    max_tokens  = max_tokens,
-                    temperature = 0.3,
-                )
-                return r.choices[0].message.content.strip()
-            except Exception as e:
-                print(f"[OpenAI] {e}")
-
-        return ""
 
     def _bullet(self, text: str) -> str:
         t = text.strip()
         if not t: return t
-        t_lower = t.lower()
+        tl = t.lower()
         for weak, strong in UPGRADES.items():
-            if t_lower.startswith(weak + " ") or t_lower == weak:
-                t = strong + " " + t[len(weak):].lstrip()
-                break
+            if tl.startswith(weak + " ") or tl == weak:
+                t = strong + " " + t[len(weak):].lstrip(); break
         t = re.sub(FILLERS, " ", t, flags=re.I).strip()
         t = re.sub(r"  +", " ", t).strip()
         if t: t = t[0].upper() + t[1:]
@@ -280,6 +272,3 @@ Return ONLY the JSON, no other text."""
         t = re.sub(r"\bI am\b", "A", text, flags=re.I)
         t = re.sub(r"\bI\b", "", t, flags=re.I)
         return re.sub(r"  +", " ", t).strip()
-
-
-from typing import Optional

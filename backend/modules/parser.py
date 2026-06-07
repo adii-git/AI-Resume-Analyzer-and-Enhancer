@@ -1,7 +1,7 @@
 """
 modules/parser.py
-Resume parser with character-level space detection for PDFs.
-Fixes merged words by detecting character gaps on each line.
+Resume parser with character-level space detection.
+Fixes merged-word PDFs by measuring gaps between characters.
 """
 
 import re, os
@@ -9,10 +9,8 @@ from typing import Dict, Any, List, Optional
 
 try:
     import pdfplumber
-    _PDF = "pdfplumber"
 except ImportError:
     pdfplumber = None
-    _PDF = None
 
 try:
     from docx import Document as _DocxDoc
@@ -37,7 +35,7 @@ TECH_SKILLS = {
     "cassandra","agile","scrum","rest api","microservices","system design","devops","mlops",
     "data structures","algorithms","oop","unit testing","figma","jira","kafka","langchain",
     "hugging face","gradio","faiss","opencv","matplotlib","seaborn","nodejs","expressjs",
-    "reactjs","expressjs","nodejs",
+    "reactjs","nextjs","vuejs","springboot","langchain","tensorflow","pytorch",
 }
 SOFT_SKILLS = {
     "communication","leadership","teamwork","problem solving","critical thinking",
@@ -78,116 +76,80 @@ class ResumeParser:
             raise ValueError("No text could be extracted.")
         return self._build(text)
 
+    # ── PDF with char-level gap detection ────────────────────────────────────
     def _pdf(self, path: str) -> str:
         if pdfplumber is None:
             raise RuntimeError("pdfplumber not installed.")
-
         full_text = ""
         try:
             with pdfplumber.open(path) as pdf:
                 for page in pdf.pages:
-                    try:
-                        # Use character-level extraction to detect gaps
-                        page_text = self._extract_with_char_gaps(page)
-                        if page_text:
-                            full_text += page_text + "\n"
-                        else:
-                            # Fallback to word extraction
-                            words = page.extract_words(x_tolerance=3, y_tolerance=3)
-                            if words:
-                                lines_dict = {}
-                                for w in words:
-                                    y_key = round(float(w["top"]) / 4) * 4
-                                    if y_key not in lines_dict:
-                                        lines_dict[y_key] = []
-                                    lines_dict[y_key].append((float(w["x0"]), w["text"]))
-                                for y in sorted(lines_dict.keys()):
-                                    lw = sorted(lines_dict[y], key=lambda x: x[0])
-                                    full_text += " ".join(w[1] for w in lw) + "\n"
-                            else:
-                                t = page.extract_text()
-                                if t:
-                                    full_text += t + "\n"
-                    except Exception:
-                        try:
-                            t = page.extract_text()
-                            if t:
-                                full_text += t + "\n"
-                        except Exception:
-                            pass
-
+                    pt = self._extract_page(page)
+                    if pt:
+                        full_text += pt + "\n"
         except Exception as e:
             raise RuntimeError(f"Failed to read PDF: {e}")
-
         if not full_text.strip():
-            raise ValueError("No text extracted.")
-
+            raise ValueError("No text extracted. PDF may be image-based.")
         return full_text
 
-    def _extract_with_char_gaps(self, page) -> str:
-        """
-        Extract text using character positions to detect word boundaries.
-        When there's a gap between characters larger than avg char width,
-        insert a space. This fixes PDFs that store text without spaces.
-        """
+    def _extract_page(self, page) -> str:
         try:
             chars = page.chars
             if not chars:
-                return ""
+                return page.extract_text() or ""
 
-            # Group chars by line (similar y position)
-            lines_dict = {}
+            # Group chars by line
+            lines: Dict[int, List] = {}
             for ch in chars:
-                if not ch.get("text", "").strip():
+                txt = ch.get("text", "")
+                if not txt or not txt.strip():
                     continue
-                y_key = round(float(ch["top"]) / 3) * 3
-                if y_key not in lines_dict:
-                    lines_dict[y_key] = []
-                lines_dict[y_key].append(ch)
+                y_key = round(float(ch.get("top", 0)) / 2) * 2
+                if y_key not in lines:
+                    lines[y_key] = []
+                lines[y_key].append(ch)
 
-            result_lines = []
-            for y in sorted(lines_dict.keys()):
-                line_chars = sorted(lines_dict[y], key=lambda c: float(c["x0"]))
-                if not line_chars:
-                    continue
+            if not lines:
+                return page.extract_text() or ""
 
-                # Build text with intelligent space insertion
-                text = ""
-                prev_x1 = None
-                prev_size = None
-
-                for ch in line_chars:
-                    char_text = ch.get("text", "")
-                    if not char_text:
-                        continue
-
-                    x0   = float(ch["x0"])
-                    x1   = float(ch["x1"])
-                    size = float(ch.get("size", 10))
-
-                    if prev_x1 is not None:
-                        gap = x0 - prev_x1
-                        avg_char_w = (prev_size or size) * 0.4
-
-                        # If gap is larger than ~40% of char width → insert space
-                        if gap > avg_char_w:
-                            text += " "
-                        elif gap < -1:
-                            # Overlapping chars (ligatures) — skip
-                            pass
-
-                    text += char_text
-                    prev_x1   = x1
-                    prev_size = size
-
-                line_text = text.strip()
-                if line_text:
-                    result_lines.append(line_text)
-
-            return "\n".join(result_lines)
+            result = []
+            for y in sorted(lines.keys()):
+                line_chars = sorted(lines[y], key=lambda c: float(c.get("x0", 0)))
+                line_text  = self._chars_to_text(line_chars)
+                if line_text.strip():
+                    result.append(line_text)
+            return "\n".join(result)
 
         except Exception:
+            try:
+                return page.extract_text() or ""
+            except Exception:
+                return ""
+
+    def _chars_to_text(self, chars: List) -> str:
+        """Convert chars to text, inserting spaces based on gap between characters."""
+        if not chars:
             return ""
+        text      = chars[0].get("text", "")
+        prev_x1   = float(chars[0].get("x1", 0))
+        prev_size = float(chars[0].get("size", 10)) or 10
+
+        for ch in chars[1:]:
+            curr_x0   = float(ch.get("x0", 0))
+            curr_char = ch.get("text", "")
+            curr_size = float(ch.get("size", 10)) or 10
+            if not curr_char:
+                continue
+            gap = curr_x0 - prev_x1
+            # Space threshold: 35% of avg char width
+            threshold = (prev_size + curr_size) / 2 * 0.35
+            if gap > threshold:
+                text += " "
+            text    += curr_char
+            prev_x1  = float(ch.get("x1", curr_x0 + curr_size * 0.5))
+            prev_size = curr_size
+        return text
 
     def _docx(self, path: str) -> str:
         if not _DOCX:
@@ -201,10 +163,11 @@ class ResumeParser:
                         lines.append(cell.text)
         return "\n".join(lines)
 
+    # ── Structure ─────────────────────────────────────────────────────────────
     def _build(self, raw: str) -> Dict[str, Any]:
-        lines = [l.strip() for l in raw.splitlines() if l.strip()]
-        head  = "\n".join(lines[:15])
-        secs  = self._segment(lines)
+        lines  = [l.strip() for l in raw.splitlines() if l.strip()]
+        head   = "\n".join(lines[:15])
+        secs   = self._segment(lines)
         skills = list(set(
             self._match_skills(secs.get("skills", []) + secs.get("summary", []))
             + self._match_skills_text(raw)
@@ -228,7 +191,7 @@ class ResumeParser:
             "sections_found"  : list(secs.keys()),
         }
 
-    def _name(self, lines: List[str], head: str) -> str:
+    def _name(self, lines, head):
         if _NLP:
             doc = _NLP(head[:500])
             for ent in doc.ents:
@@ -240,8 +203,8 @@ class ResumeParser:
                 return l.strip()
         return lines[0] if lines else "Unknown"
 
-    def _segment(self, lines: List[str]) -> Dict[str, List[str]]:
-        out: Dict[str, List[str]] = {"header": []}
+    def _segment(self, lines):
+        out = {"header": []}
         cur = "header"
         for line in lines:
             k = self._hdr(line)
@@ -252,7 +215,7 @@ class ResumeParser:
                 out[cur].append(line)
         return out
 
-    def _hdr(self, line: str) -> Optional[str]:
+    def _hdr(self, line):
         cl = line.strip().lower()
         if not (3 <= len(cl) <= 60) or cl.startswith(_BULLETS):
             return None
@@ -261,25 +224,24 @@ class ResumeParser:
                 return key
         return None
 
-    def _match_skills(self, lines: List[str]) -> List[str]:
+    def _match_skills(self, lines):
         text = " ".join(lines).lower()
         return [s.title() for s in (TECH_SKILLS | SOFT_SKILLS)
                 if re.search(r"\b" + re.escape(s) + r"\b", text)]
 
-    def _match_skills_text(self, text: str) -> List[str]:
+    def _match_skills_text(self, text):
         t = text.lower()
         return [s.title() for s in TECH_SKILLS
                 if re.search(r"\b" + re.escape(s) + r"\b", t)]
 
-    def _edu(self, lines: List[str]) -> List[Dict]:
+    def _edu(self, lines):
         entries, cur = [], {}
         for line in lines:
             if _DEGREE.search(line):
                 if cur: entries.append(cur)
                 cur = {"degree": line.strip(), "institution": "", "year": "", "gpa": ""}
             elif cur:
-                if not cur["institution"] and len(line) > 4:
-                    cur["institution"] = line.strip()
+                if not cur["institution"] and len(line) > 4: cur["institution"] = line.strip()
                 m = _GPA.search(line)
                 if m: cur["gpa"] = m.group(2)
                 y = _YEAR.search(line)
@@ -289,7 +251,7 @@ class ResumeParser:
             entries = [{"degree":"","institution":" ".join(lines[:2]),"year":"","gpa":""}]
         return entries
 
-    def _exp(self, lines: List[str]) -> List[Dict]:
+    def _exp(self, lines):
         entries, cur = [], None
         for line in lines:
             is_b = line.startswith(_BULLETS)
@@ -298,18 +260,16 @@ class ResumeParser:
                 cur = {"title": line.strip(), "company": "", "duration": "",
                        "bullets": [], "quantified_impact": []}
             elif cur:
-                if _DATE.search(line):
-                    cur["duration"] = line.strip()
+                if _DATE.search(line): cur["duration"] = line.strip()
                 elif is_b:
                     b = re.sub(r"^[•\-●▸∙*–→◦▪]\s*", "", line).strip()
                     cur["bullets"].append(b)
                     cur["quantified_impact"].extend(h[0] for h in _IMPACT.findall(b))
-                elif not cur["company"] and len(line) > 3:
-                    cur["company"] = line.strip()
+                elif not cur["company"] and len(line) > 3: cur["company"] = line.strip()
         if cur: entries.append(cur)
         return entries
 
-    def _proj(self, lines: List[str]) -> List[Dict]:
+    def _proj(self, lines):
         entries, cur = [], None
         for line in lines:
             is_b = line.startswith(_BULLETS)
@@ -318,9 +278,7 @@ class ResumeParser:
                 cur = {"title": line.strip(), "description": [], "tech_stack": [], "links": []}
             elif cur:
                 if is_b:
-                    cur["description"].append(
-                        re.sub(r"^[•\-●▸∙*–→◦▪]\s*", "", line).strip()
-                    )
+                    cur["description"].append(re.sub(r"^[•\-●▸∙*–→◦▪]\s*", "", line).strip())
                 cur["links"].extend(_URL.findall(line))
                 cur["tech_stack"].extend(self._match_skills([line]))
         if cur: entries.append(cur)
@@ -328,5 +286,5 @@ class ResumeParser:
             entries = [{"title":"Projects","description":lines,"tech_stack":[],"links":[]}]
         return entries
 
-    def _plain(self, lines: List[str]) -> List[str]:
+    def _plain(self, lines):
         return [re.sub(r"^[•\-●▸∙*–→◦▪]\s*","",l).strip() for l in lines if l.strip()]
