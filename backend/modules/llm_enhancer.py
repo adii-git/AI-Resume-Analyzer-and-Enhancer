@@ -1,4 +1,10 @@
 """
+from modules.ats_scorer import ATSScorer
+
+scorer = ATSScorer()
+gaps = scorer.keyword_gap(parsed["raw_text"], jd)
+missing_keywords = ", ".join(gaps["missing"][:20])
+
 modules/llm_enhancer.py
 Sends FULL resume to Groq/OpenAI for comprehensive enhancement.
 Fixes merged words AND improves content simultaneously.
@@ -94,18 +100,25 @@ class LLMEnhancer:
     # ── Full resume enhancement ───────────────────────────────────────────────
     def _full_enhance(self, parsed: Dict, jd: str, role: str) -> Optional[Dict]:
         resume_text = self._to_text(parsed)
+        
         prompt = f"""Target Role: {role}
-Job Description (first 300 chars): {jd[:300]}
+FULL JOB DESCRIPTION:
+{jd}
 
 RESUME TO ENHANCE:
 {resume_text}
 
 Instructions:
-1. Fix ALL merged words (e.g. "BuiltaSystem" → "Built a System", "ImplementedATSscoring" → "Implemented ATS scoring")
+1. Fix ALL merged words
 2. Rewrite bullets to start with strong action verbs
 3. Keep ALL original facts
 4. Do NOT add fake numbers or metrics
 5. Improve grammar and clarity
+6. Analyze the Job Description and naturally include relevant ATS keywords where truthful
+7. Improve Skills section by adding relevant technologies already implied by projects or experience
+8. Increase ATS keyword match score
+9. Keep the resume ATS-friendly
+
 
 Return this EXACT JSON (no markdown, no extra text):
 {{
