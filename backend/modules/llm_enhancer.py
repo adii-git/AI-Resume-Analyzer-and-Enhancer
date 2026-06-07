@@ -71,7 +71,7 @@ class LLMEnhancer:
                     "projects"  : enhanced.get("projects", []),
                     "skills"    : enhanced.get("skills", []),
                 }
-                model = "Groq Llama3-70b" if _GROQ else "GPT-4o-mini"
+                model = "llama-3.3-70b-versatile" if _GROQ else "GPT-4o-mini"
                 improvements.append(f"✅ Full resume enhanced using {model}.")
                 improvements.append("✅ Fixed merged words and improved all bullet points.")
                 improvements.append("✅ Applied strong action verbs throughout.")
@@ -204,7 +204,7 @@ Return this EXACT JSON (no markdown, no extra text):
         if _GROQ and _gclient:
             try:
                 r = _gclient.chat.completions.create(
-                    model    = "llama3-70b-8192",
+                    model    = "llama-3.3-70b-versatile",
                     messages = [
                         {"role": "system", "content": SYSTEM},
                         {"role": "user",   "content": prompt},
