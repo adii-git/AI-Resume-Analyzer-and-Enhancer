@@ -10,12 +10,18 @@ from typing import Dict, Any, List, Optional
 # Groq
 try:
     from groq import Groq
-    _gkey   = os.getenv("GROQ_API_KEY", "")
-    _gclient= Groq(api_key=_gkey) if _gkey else None
-    _GROQ   = _gclient is not None
-except Exception:
-    _gclient= None
-    _GROQ   = False
+
+    _gkey = os.getenv("GROQ_API_KEY", "")
+    print("Groq key exists:", bool(_gkey))
+
+    _gclient = Groq(api_key=_gkey) if _gkey else None
+    _GROQ = _gclient is not None
+
+except Exception as e:
+    print("GROQ ERROR:", e)
+
+    _gclient = None
+    _GROQ = False
 
 # OpenAI
 try:

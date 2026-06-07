@@ -1,5 +1,9 @@
 from dotenv import load_dotenv
+import os
+
 load_dotenv()
+
+print("GROQ KEY FOUND:", bool(os.getenv("GROQ_API_KEY")))
 """
 main.py — FastAPI entry point
 Run: uvicorn main:app --reload --port 8000
