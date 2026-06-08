@@ -40,6 +40,9 @@ except Exception:
     _OPENAI = False
 
 print(f"[LLM] Groq={_GROQ}, OpenAI={_OPENAI}")
+print("GROQ_API_KEY FOUND:", bool(os.getenv("GROQ_API_KEY")))
+print("GROQ CLIENT CREATED:", _gclient is not None)
+
 
 UPGRADES = {
     "responsible for": "Led", "helped with": "Contributed to",
@@ -141,6 +144,7 @@ Return this EXACT JSON (no markdown, no extra text):
 
         raw = self._call(prompt, max_tokens=3000)
         if not raw:
+            print("[LLM] No response returned from Groq/OpenAI")
             return None
 
         try:
@@ -214,6 +218,7 @@ Return this EXACT JSON (no markdown, no extra text):
     # ── LLM call ─────────────────────────────────────────────────────────────
     def _call(self, prompt: str, max_tokens: int = 3000) -> str:
         # Try Groq first (free and fast)
+        print("Trying Groq API...")
         if _GROQ and _gclient:
             try:
                 r = _gclient.chat.completions.create(
@@ -226,6 +231,7 @@ Return this EXACT JSON (no markdown, no extra text):
                     temperature = 0.2,
                 )
                 result = r.choices[0].message.content.strip()
+                print("Groq response received:", len(result))
                 if result: return result
             except Exception as e:
                 print(f"[Groq] Error: {e}")
